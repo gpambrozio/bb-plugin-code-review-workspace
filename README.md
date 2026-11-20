@@ -6,6 +6,8 @@
 
 # Code Review Workspace
 
+> **This fork's `main` is its owner's own build** (versions `<upstream>-gp.<n>`): [upstream](https://github.com/AndrewBird81/bb-plugin-code-review-workspace)'s `main`, plus changes still waiting upstream: picking the review agent and guide writer as you start them ([#12](https://github.com/AndrewBird81/bb-plugin-code-review-workspace/pull/12)), and the guide writer's fix for big PRs ([#26](https://github.com/AndrewBird81/bb-plugin-code-review-workspace/pull/26)). To run the author's releases, install from upstream.
+
 Understand a pull request well enough to approve it: agents turn the change into a guided walkthrough and draft the review, and you decide what reaches GitHub.
 
 A [BB](https://getbb.app) plugin for reviewing a GitHub pull request or a local Git change. It's for reviewers who need to understand a change before they approve it, often one an agent wrote.

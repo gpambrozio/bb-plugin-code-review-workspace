@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+This fork's `main` is its owner's build, versioned **1.15.0-gp.1**: 1.15.0 with the changes below, which wait upstream as [#12](https://github.com/AndrewBird81/bb-plugin-code-review-workspace/pull/12) and [#26](https://github.com/AndrewBird81/bb-plugin-code-review-workspace/pull/26).
+
 Choose the review agent as you start a review, and the guide writer as you build a guide. Still **BB 0.48+** (plugin SDK **0.6.79+**) with Node 24+. It adds no migration: the review agent you pick is kept with the review's other lifecycle fields, so rolling back to 1.15.0 keeps everything, and 1.15.0 starts that review's next conversation on the **Review agent** setting.
 
 - A PR link pasted into **All reviews** shows **Review agent** under **Review**: BB's own provider and model picker, starting at the **Review agent** setting, else the agent, model, and effort BB remembers for your personal project, as the review would get. Where BB has more than one machine, it has a machine choice too, and the picker lists that machine's providers.
