@@ -11,6 +11,8 @@ import { agentChoiceSchema, agentExecutionSchema, focusLabelSchema, focusSchema,
 // app.tsx imports the TYPE of this contract only; the backend module never enters the frontend bundle.
 // Other plugins call src/public-contract.ts's methods: nothing here is a contract with them.
 const targetKey = z.object({ targetKey: z.string() }).strict();
+/** A review and the guide writer picked for this one build of its guide, in place of Settings' (src/generate.ts beginGuide). */
+const guideBuild = z.object({ targetKey: z.string(), agent: agentChoiceSchema.optional() }).strict();
 /** A line, as Postgres's integer column holds it; 0 is the summary's place (src/draft.ts SUMMARY_AT). */
 const lineNumber = z.number().int().min(0).max(2_147_483_647);
 /** A range's first line. */
@@ -126,14 +128,15 @@ export const rpcContract = defineRpcContract({
   getPreferences: { input: z.null(), output: z.object({ preferences: preferencesSchema, revision: z.number().int() }) },
   savePreferences: {
     // Pages open from before 0.5.1 send settings without threadListReviews, from before 0.6.0 without rereviewShows,
-    // and from before 1.5.0 without markdownFiles; the saved value stands. Pages from before knobs send none, and any page may send some: the saved
+    // from before 1.5.0 without markdownFiles, and from before 1.15.0 without skipNitpicks; the saved value stands. Pages from before knobs send none, and any page may send some: the saved
     // ones stand for the rest. Pages from before focuses leave its saved value intact.
-    input: z.object({ preferences: preferencesSchema.extend({ knobs: knobsSchema.partial().optional(), focuses: focusSettingsSchema.partial({ githubLabel: true, mergeEffort: true }).extend({ focuses: z.array(focusSchema.extend({ agent: focusSchema.shape.agent.removeDefault().optional() })).max(12) }) }).partial({ threadListReviews: true, rereviewShows: true, markdownFiles: true, focuses: true }), revision: z.number().int().min(0) }).strict(),
+    input: z.object({ preferences: preferencesSchema.extend({ knobs: knobsSchema.partial().optional(), focuses: focusSettingsSchema.partial({ githubLabel: true, mergeEffort: true }).extend({ focuses: z.array(focusSchema.extend({ agent: focusSchema.shape.agent.removeDefault().optional() })).max(12) }) }).partial({ threadListReviews: true, rereviewShows: true, markdownFiles: true, skipNitpicks: true, focuses: true }), revision: z.number().int().min(0) }).strict(),
     output: z.object({ preferences: preferencesSchema, revision: z.number().int() }),
   },
   // Seeds a custom agent selection with the panel project's remembered defaults, and a custom guide writer with the
   // mode it runs at on them (src/generate.ts guideWriterMode); without one, the project's own.
-  getAgentDefaults: { input: z.null(), output: z.object({ defaults: agentExecutionSchema.nullable(), guideWriterMode: z.enum(["accept-edits", "auto"]).optional() }) },
+  // With a targetKey, the defaults of the project that review's agents run in; else the personal project's.
+  getAgentDefaults: { input: z.object({ targetKey: z.string() }).strict().nullable(), output: z.object({ defaults: agentExecutionSchema.nullable(), guideWriterMode: z.enum(["accept-edits", "auto"]).optional() }) },
   // A machine's providers and the permission modes each runs in, so Settings can say when an agent can't be restricted.
   // The bb server's without a hostId; none when they can't be read.
   getProviderModes: {
@@ -170,9 +173,10 @@ export const rpcContract = defineRpcContract({
     output: z.object({ body: z.string(), revision: z.number().int() }),
   },
 
-  // Panel: start a review by pasting a GitHub PR URL
+  // Panel: start a review by pasting a GitHub PR URL. agent: the review agent picked for this review, in place of
+  // Settings' (src/store.ts reviewAgent); absent, Settings' as before.
   startReview: {
-    input: z.object({ input: z.string().min(1) }).strict(),
+    input: z.object({ input: z.string().min(1), agent: agentChoiceSchema.optional() }).strict(),
     output: z.object({ ok: z.boolean(), error: z.string().optional(), targetKey: z.string().optional() }),
   },
 
@@ -234,7 +238,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({ hasNewCommits: z.boolean(), current: z.string().optional(), stored: z.string().optional(), baseChanged: z.object({ from: z.string(), to: z.string() }).optional(), localChanged: z.boolean().optional() }),
   },
   rereview: {
-    input: targetKey,
+    input: guideBuild,
     output: z.object({ ok: z.boolean(), error: z.string().optional() }),
   },
   /** Stop the review's guide while it builds, once it's finalized: restored when a rebuild has its previous guide back. */
@@ -651,7 +655,7 @@ export const rpcContract = defineRpcContract({
   /** The review's page shows: mark its agent's thread read in BB, as opening a thread does (src/agent-status.ts). */
   readAgent: { input: targetKey, output: z.object({ ok: z.boolean() }) },
   /** Generate the guide for a review found on GitHub (status "tracked"). */
-  startTrackedReview: { input: targetKey, output: z.object({ ok: z.boolean(), error: z.string().optional() }) },
+  startTrackedReview: { input: guideBuild, output: z.object({ ok: z.boolean(), error: z.string().optional() }) },
   /** Start what didn't run on its own because of the PR's author (skippedRun), approving agents on its head. */
   runSkipped: { input: targetKey, output: z.object({ ok: z.boolean(), error: z.string().optional() }) },
 

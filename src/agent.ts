@@ -4,7 +4,7 @@ import type { AgentMessage, ReviewMeta } from "./store";
 import type { Guide } from "./guide";
 import { isMissingThread } from "./thread-errors";
 import { runGh } from "./gh";
-import { assistantPreferencesPrompt, automaticReviewPrompt, spawnExecution, type AgentExecution, type ReviewPreferences } from "./preferences";
+import { assistantPreferencesPrompt, automaticReviewPrompt, nitPolicy, nitpickRule, spawnExecution, type AgentExecution, type ReviewPreferences } from "./preferences";
 import { mayRunChecks, mayRunUnattended, skipWhy } from "../lib/trust";
 import { agentPlacement, machineStatus, machineUnavailable } from "./machines";
 import { identityIn, placeFacts } from "./review-places";
@@ -59,6 +59,8 @@ export function assistantInstructions(targetKey: string, guide: Guide | null, pr
   // What Settings asks it to do besides, least needed last: the first to go, a whole line at a time, when the guide's
   // chapter titles, or bb's limit, need the room.
   const checks = [
+    // Settings' Skip nitpicks, by whose change it is: first, so the last of them to go.
+    nitpickRule(nitPolicy(preferences, review)),
     ...(preferences.knobs.preExistingFindings ? ["Mark problems in code the PR didn't change introduced: false; never suggest REQUEST_CHANGES for those alone."] : []),
     ...(preferences.knobs.agentCoverage ? ["Pass set_review_summary unchecked: what you didn't read or run."] : []),
     ...(preferences.knobs.testWeakening ? ["Check tests marked weakened, that an added enum value, route, handler or provider is registered wherever its siblings are, and for helpers the PR re-implements. Over ~1,000 changed lines in independent chapters, suggest a split."] : []),
@@ -129,11 +131,7 @@ export async function getConversation(bb: BbPluginApi, store: AsyncStore, target
   threadId: string | null; legacy: AgentMessage[]; defaults: AgentChoice | null;
   machine: { name: string; connected: boolean } | null;
 }> {
-  /** The agent a new conversation would start on: Settings', or the project's, by its id. */
-  const chosen = async (tx: AsyncStore) => {
-    const custom = (await tx.getPreferences()).preferences.assistantAgent;
-    return { custom, projectId: custom ? undefined : (await tx.getReview(targetKey))?.projectId };
-  };
+  const chosen = (tx: AsyncStore) => reviewAgentOf(tx, targetKey);
   const { legacy, threadId, ...unthreaded } = await store.exclusive(async (tx) => {
     const legacy = await tx.listAgentMessages(targetKey);
     const threadId = await tx.getAssistantThread(targetKey);
@@ -160,6 +158,16 @@ export async function getConversation(bb: BbPluginApi, store: AsyncStore, target
   if (custom) return { threadId: null, legacy, defaults: choice(custom), machine: await machineStatus(bb, custom.hostId) };
   const project = projectId ? await bb.sdk.projects.defaultExecutionOptions({ projectId }).catch(() => null) : null;
   return { threadId: null, legacy, defaults: project && choice(project), machine: null };
+}
+
+/**
+ * The agent a new conversation on the review would start on: the one chosen as the review was started, else Settings',
+ * else (custom null) the project's defaults, by the review's project id.
+ */
+async function reviewAgentOf(tx: AsyncStore, targetKey: string): Promise<{ custom: AgentChoice | null; projectId: string | undefined }> {
+  const review = await tx.getReview(targetKey);
+  const custom = review?.reviewAgent ?? (await tx.getPreferences()).preferences.assistantAgent;
+  return { custom, projectId: custom ? undefined : review?.projectId };
 }
 
 function choice(agent: AgentChoice): AgentChoice {
@@ -404,11 +412,11 @@ const SELF_REVIEW = "This is the reviewer's own PR, so this is a self-review. Gi
 
 /**
  * The reasoning level to send at for `wanted` effort: `wanted` when the review agent's level is lower on its provider's
- * ladder, which offers `wanted`; otherwise none, so it's unchanged. The review agent is Settings', else the project's
- * default; a conversation on another provider (`providerId`) is at a level unknown here, and stays unchanged.
+ * ladder, which offers `wanted`; otherwise none, so it's unchanged. The review agent is the review's own, else Settings',
+ * else the project's default; a conversation on another provider (`providerId`) is at a level unknown here, and stays unchanged.
  */
 async function raisedLevel(bb: BbPluginApi, store: AsyncStore, targetKey: string, wanted: string, providerId?: string): Promise<string | undefined> {
-  const { custom, projectId } = await store.exclusive(async (tx) => ({ custom: (await tx.getPreferences()).preferences.assistantAgent, projectId: (await tx.getReview(targetKey))?.projectId }));
+  const { custom, projectId } = await store.exclusive((tx) => reviewAgentOf(tx, targetKey));
   const agent = custom ?? (projectId ? await bb.sdk.projects.defaultExecutionOptions({ projectId }).catch(() => null) : null);
   if (!agent || (providerId && agent.providerId !== providerId)) return undefined;
   const providers = await bb.sdk.providers.list().catch(() => []);

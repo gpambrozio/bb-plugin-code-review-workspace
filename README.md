@@ -6,6 +6,8 @@
 
 # Code Review Workspace
 
+> **This fork's `main` is its owner's own build** (versions `<upstream>-gp.<n>`): [upstream](https://github.com/AndrewBird81/bb-plugin-code-review-workspace)'s `main`, plus changes still waiting upstream: picking the review agent and guide writer as you start them ([#12](https://github.com/AndrewBird81/bb-plugin-code-review-workspace/pull/12)), and the guide writer's fix for big PRs ([#26](https://github.com/AndrewBird81/bb-plugin-code-review-workspace/pull/26)). To run the author's releases, install from upstream.
+
 Understand a pull request well enough to approve it: agents turn the change into a guided walkthrough and draft the review, and you decide what reaches GitHub.
 
 A [BB](https://getbb.app) plugin for reviewing a GitHub pull request or a local Git change. It's for reviewers who need to understand a change before they approve it, often one an agent wrote.
@@ -210,7 +212,7 @@ Limits:
 
 2. On the BB server, sign in to GitHub: `gh auth login --hostname github.com`.
 3. Open **Code Review Workspace** in BB's sidebar. With no reviews yet, **All reviews** checks your setup.
-4. Paste a GitHub PR link into the box on **All reviews**, and choose **Review** or press Enter. The guide writer builds the guide; then the review agent drafts comments, a summary, and a verdict.
+4. Paste a GitHub PR link into the box on **All reviews**, and choose **Review** or press Enter. The guide writer builds the guide; then the review agent drafts comments, a summary, and a verdict. **Review agent**, under the link, starts at the review agent in Settings: pick another provider, model, effort, or machine for this review alone. A PR found on GitHub without a guide has **Guide writer** above **Build the guide**, starting at the guide writer in Settings, to pick the agent for that build alone.
 5. On the review's Overview, choose **Start reading** and go through the chapters. Edit or remove the agent's comments, and add your own.
 6. Open **Finish review**, pick a verdict, and choose **Submit to GitHub**.
 

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+This fork's `main` is its owner's build, versioned **1.15.0-gp.1**: 1.15.0 with the changes below, which wait upstream as [#12](https://github.com/AndrewBird81/bb-plugin-code-review-workspace/pull/12) and [#26](https://github.com/AndrewBird81/bb-plugin-code-review-workspace/pull/26).
+
+Choose the review agent as you start a review, and the guide writer as you build a guide. Still **BB 0.48+** (plugin SDK **0.6.79+**) with Node 24+. It adds no migration: the review agent you pick is kept with the review's other lifecycle fields, so rolling back to 1.15.0 keeps everything, and 1.15.0 starts that review's next conversation on the **Review agent** setting.
+
+- A PR link pasted into **All reviews** shows **Review agent** under **Review**: BB's own provider and model picker, starting at the **Review agent** setting, else the agent, model, and effort BB remembers for your personal project, as the review would get. Where BB has more than one machine, it has a machine choice too, and the picker lists that machine's providers.
+- Pick another, and the review's agent starts on exactly that provider, model, effort, service tier, and machine: its automatic review, and any conversation it starts later, as after **New conversation**. Settings stay as they are, and other reviews keep them. Settings' permission mode comes along when you keep its provider; on another, the provider's own default. Left as it is, nothing is sent, and the review falls back as before.
+- A pick on a machine that's offline or removed stops the review before the PR is read, saying so, as the guide writer's machine does. A setting whose machine was removed shows the machine choice even with one machine left, so the server can run this one.
+- Both pickers follow Settings changed while they're open, unless you picked another; a review merged into one with no conversation of its own brings the review agent picked for its conversation, which then replaces the other's pick.
+- A PR found on GitHub with no guide yet shows **Guide writer** above **Build the guide** on its page, and so does a first guide that stopped or failed, above **Build the guide** or **Try again**. It starts at the **Guide writer agent** setting, else the agent, model, and effort BB remembers for the project the review runs in, with the same machine choice. Pick another, and that build's writer starts on exactly that provider, model, effort, service tier, and machine; Settings stay as they are, and the pick isn't kept, so the next build, as **Update guide**, is the setting's. Settings' permission mode comes along when you keep its provider; on another, the lowest its provider runs in on the picked machine, as on Project defaults. A pick on a machine that's offline or removed stops the build before the PR is read.
+- A pasted PR's guide writer is the **Guide writer agent** setting's, as before. `bb review`, **Review changes** above a thread's message box, starting a stack's PR from its review, **Build the guide** in a review's menu, and **Update guide** or **Rebuild guide** take no pick: they start on the setting. A guide a reload interrupted restarts on the setting's writer too.
+- **Big PRs' guides:** the guide writer read a big diff in pages of up to 80 KB, more than Claude Code keeps in a tool result, so Claude Code saved each page to a file for the writer to read back, and a shell command to read one waited, in the hidden writer, for an approval no one saw, until the guide timed out. Pages are now at most 40 KB; a file longer than a page goes on, cut at a line, on the next page, which names it.
+- **Hidden guide writer:** an approval it asks for is declined, and it goes on with Code Review Workspace's tools; a question or anything else it asks fails the guide at once, saying what it asked, instead of after its timeout.
+
+## 1.15.0 — 2026-11-20
+
+Reviews that catch the comments human reviewers ask to fix, and a Skip nitpicks setting for others' PRs and for your own. Still **BB 0.48+** (plugin SDK **0.6.79+**) with Node 24+; installs at `^1.0.0` update to 1.15.0. 1.15.0 adds no migration: Skip nitpicks is kept with the other settings, so rolling back to 1.14.0 keeps everything, and 1.14.0 drops the setting the next time it saves settings.
+
+- **Docs focus:** checks every comment the diff adds for ticket, issue or phase ids, wording a reader can't follow the first time, comments that only restate the code, and lint suppressions with no reason given. These are now Should fix with a suggested rewrite, not Nits. If you edited the Docs focus's instructions, use **Reset to template** to get the new one.
+- **Focus merge:** keeps a focus's severity unless the code shows it's wrong, so a wrong docstring is no longer dismissed as a Nit, and no longer dismisses findings as "not worth the author's time".
+- **Skip nitpicks** (Settings → Review agent), with one switch for others' PRs (on by default) and one for your own PRs and local changes (off by default). With it off on your own change, the review agent and focuses draft every confirmed Nit, with no cap of 5 per focus. With it off on others' PRs, they keep at most 5 per focus.
+- **Automatic review:** the default prompt says comment wording and ticket ids aren't style, takes **Nit:** comments, and leaves Nits to Skip nitpicks. If you never edited the prompt, you get the new default.
+- **Assistant instructions:** when you've written none, the fallback no longer says "skip nitpicks"; Skip nitpicks decides that.
+
 ## 1.14.0 — 2026-11-17
 
 Reviews in BB's own thread sections, and a focus merge that no longer drops its findings. Still **BB 0.48+** (plugin SDK **0.6.79+**) with Node 24+; installs at `^1.0.0` update to 1.14.0. 1.14.0 adds no migration: a review's section is kept with its other lifecycle fields, so rolling back to 1.13.0 keeps everything, and reviews you moved go back to where they go by themselves.

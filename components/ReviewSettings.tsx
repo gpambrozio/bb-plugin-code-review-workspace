@@ -29,10 +29,10 @@ const CHOICE = `h-auto min-h-8 whitespace-normal py-1.5 text-left aria-pressed:b
 
 type AgentUpdate = (agent: AgentExecution | null) => AgentExecution | null;
 /** undefined while loading; null when they couldn't be loaded. */
-type Machines = readonly Machine[] | null | undefined;
+export type Machines = readonly Machine[] | null | undefined;
 
 /** The bb server is the default machine, stored as no machine so the choice follows a server move. */
-function MachineSelect({ hostId, machines, disabled, onChange }: {
+export function MachineSelect({ hostId, machines, disabled, onChange }: {
   hostId?: string; machines: Machines; disabled: boolean; onChange(hostId: string | undefined): void;
 }) {
   const server = machines?.find((machine) => machine.server);
@@ -366,6 +366,7 @@ export function ReviewSettings({ onBack, back }: { onBack?: () => void; back?: s
             {knob("reviewCommandInThreads")}
             <AgentSelection label="Review agent" agent={record.preferences.assistantAgent} unrestricted={unrestricted(record.preferences.assistantAgent)} machines={machines} disabled={busy || updating} note="Used to start new conversations, which stay on the machine they started on. In a conversation, change the model and effort per message." onCustomize={() => void customize("assistantAgent")} onChange={(update) => setAgent("assistantAgent", update)} />
             <label className="block space-y-2"><span className="text-sm font-medium">Assistant instructions</span><Textarea aria-label="Assistant instructions" maxLength={ASSISTANT_INSTRUCTIONS_LIMIT} rows={5} value={record.preferences.assistantInstructions} onChange={(event) => { setSaved(false); setRecord({ ...record, preferences: { ...record.preferences, assistantInstructions: event.target.value } }); }} placeholder="Prioritize correctness and security. Show a concrete failure case for suspected bugs. Keep suggestions actionable." /></label>
+            {([["others", "Skip nitpicks on others’ PRs", "The review agent and focuses leave out optional polish on someone else’s PR."], ["own", "Skip nitpicks on your own PRs", "Your own PRs and local changes. Off: every confirmed Nit is drafted, with no cap, to fix before anyone else reviews."]] as const).map(([side, label, help]) => <label key={side} className="flex items-start gap-2.5"><input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-primary" checked={record.preferences.skipNitpicks[side]} onChange={(event) => { setSaved(false); setRecord({ ...record, preferences: { ...record.preferences, skipNitpicks: { ...record.preferences.skipNitpicks, [side]: event.target.checked } } }); }} /><span className="space-y-1"><span className="block text-sm font-medium">{label}</span><span className="block text-xs text-muted-foreground">{help}</span></span></label>)}
             {knob("reviewMd")}
             <AgentCommentLearning instructions={record.preferences.assistantInstructions} onAdd={(lines) => { setSaved(false); setRecord((current) => current && { ...current, preferences: { ...current.preferences, assistantInstructions: [current.preferences.assistantInstructions.trim(), lines].filter(Boolean).join("\n") } }); }} reasons={record.preferences.knobs.removalReasons} />
             {knob("removalReasons")}

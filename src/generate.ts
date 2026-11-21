@@ -1,8 +1,8 @@
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import type { BbPluginApi, PluginThreadEventPayloads } from "@get-bb/plugin-sdk";
 import { stopFocusRunIn } from "./focus-run";
 import { completionNotifications } from "./completion-notifications";
 import { defaultPreferences, guidePreferencesPrompt, reReviewCheckPrompt, spawnExecution, type ReviewPreferences } from "./preferences";
-import { refreshAssistants, skipRun, startAutomaticReview } from "./agent";
+import { refreshAssistants, skipRun, startAutomaticReview, type AgentChoice } from "./agent";
 import { agentPlacement, machineUnavailable } from "./machines";
 import { startVerification } from "./verification";
 import { baselineOf } from "./feedback-view";
@@ -23,9 +23,72 @@ const preparedListeners = new WeakMap<BbPluginApi, (targetKey: string) => void>(
 export function onPrepared(bb: BbPluginApi, listener: (targetKey: string) => void) { preparedListeners.set(bb, listener); }
 
 const active = new WeakMap<BbPluginApi, Set<AbortController>>();
-const failures = new WeakMap<BbPluginApi, Map<string, AbortController>>();
+/** Each guide writer this instance spawned and is waiting on, by its thread: what fails its run, and the asks it already handled. */
+const failures = new WeakMap<BbPluginApi, Map<string, { failed: AbortController; handled: Set<string> }>>();
 /** thread.failed: a guide worker that failed ends its generation now, instead of at the wait's timeout, saying `error`, BB's why. */
-export function guideWorkerFailed(bb: BbPluginApi, threadId: string, error?: string | null) { failures.get(bb)?.get(threadId)?.abort(error || undefined); }
+export function guideWorkerFailed(bb: BbPluginApi, threadId: string, error?: string | null) { failures.get(bb)?.get(threadId)?.failed.abort(error || undefined); }
+
+type PendingInteraction = PluginThreadEventPayloads["interaction.pending"]["interaction"] | Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["interactions"]["list"]>>[number];
+/**
+ * interaction.pending: a guide writer is hidden, so no one sees what it asks. An approval it raises is declined, and the
+ * writer goes on with the plugin's tools, which need none. Anything else, or an approval BB couldn't decline, ends its
+ * generation now, saying what it asked, instead of at the wait's timeout. Each ask is handled once, whether the event or
+ * the writer's pending asks read as it's first watched (watchAsks) find it first.
+ */
+export async function guideWorkerAsked(bb: BbPluginApi, threadId: string, interaction: PendingInteraction): Promise<void> {
+  const watch = failures.get(bb)?.get(threadId);
+  if (!watch || watch.failed.signal.aborted || interaction.status !== "pending" || watch.handled.has(interaction.id)) return;
+  watch.handled.add(interaction.id);
+  const { failed } = watch;
+  const { payload } = interaction;
+  const asked = payload.kind === "approval" ? `for approval ${payload.subject.kind === "command" ? `to run \`${clip(payload.subject.command)}\`` : `of a ${payload.subject.kind.replaceAll("_", " ")}`}`
+    : payload.kind === "user_question" ? "a question" : `for input (${payload.kind})`;
+  if (payload.kind === "approval" && payload.availableDecisions.includes("deny")) {
+    try {
+      await bb.sdk.threads.interactions.resolve({ threadId, interactionId: interaction.id, resolution: { decision: "deny" } });
+      bb.log.info(`Declined the guide writer ${threadId}'s ask ${asked}: no one sees a hidden writer's asks.`);
+      return;
+    } catch (error) {
+      failed.abort(`it asked ${asked}, and declining it failed (${error instanceof Error ? error.message : String(error)}); a hidden writer's asks reach no one`);
+      return;
+    }
+  }
+  failed.abort(`it asked ${asked}, and a hidden writer's asks reach no one`);
+}
+/** How long watchAsks waits before each read of a writer's pending asks after the first fails: then it gives up. */
+const ASKS_RETRIES_MS = [250, 1_000];
+/**
+ * Watch the guide writer `threadId` this run spawned, before anything else awaits, so `failed` ends the run: then handle
+ * the asks it raised before it was watched, as BB may start it, and it ask, before its spawn returns. A read of them that
+ * fails is tried again a little later; one that never succeeds ends the run, since an ask it missed would wait unseen.
+ */
+function watchAsks(bb: BbPluginApi, threadId: string, failed: AbortController): void {
+  const watched = failures.get(bb) ?? new Map<string, { failed: AbortController; handled: Set<string> }>();
+  failures.set(bb, watched);
+  watched.set(threadId, { failed, handled: new Set() });
+  void (async () => {
+    for (let attempt = 0; ; attempt++) {
+      let pending: PendingInteraction[];
+      try {
+        pending = await bb.sdk.threads.interactions.list({ threadId });
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        if (attempt >= ASKS_RETRIES_MS.length) {
+          failed.abort(`what it asked as it started couldn't be read (${why}), so an ask could wait unseen`);
+          return;
+        }
+        bb.log.warn(`Couldn't read what the guide writer ${threadId} asked as it started (${why}); trying again.`);
+        await new Promise((resolve) => setTimeout(resolve, ASKS_RETRIES_MS[attempt]));
+        if (failed.signal.aborted || watched.get(threadId)?.failed !== failed) return;
+        continue;
+      }
+      for (const interaction of pending) await guideWorkerAsked(bb, threadId, interaction);
+      return;
+    }
+  })();
+}
+/** A command as a reviewer reads it in a guide's error: its first 200 characters, on one line. */
+const clip = (command: string) => { const line = command.replace(/\s+/g, " ").trim(); return line.length > 200 ? `${line.slice(0, 199)}…` : line; };
 /**
  * Each running generation, by its id: told when generate_review_guide accepts its guide, why it last refused one, and
  * whether the reviewer stopped it; and whether it asked for sinceReview, as a re-review does.
@@ -98,19 +161,42 @@ export async function guideWriterUnavailable(bb: BbPluginApi, store: AsyncStore)
 
 /**
  * The writer's permission mode on the project's defaults. Not the project's, as its tools need no shell or edits:
- * accept-edits where the project's provider runs in it, else auto, whose approvals bb reviews itself, so the hidden
- * writer waits on no one. Unset, so the project's own, when the provider runs in neither or can't be read.
- * Pass `known` when the defaults are already read.
+ * accept-edits where the project's provider runs in it, else auto, whose approvals bb reviews itself. A shell command
+ * accept-edits still asks approval for is declined (guideWorkerAsked), so the hidden writer waits on no one. Unset, so
+ * the project's own, when the provider runs in neither or can't be read.
+ * Pass `known` when the defaults are already read, and `hostId` for a writer on another machine than the server, whose
+ * providers are that machine's.
  */
-export async function guideWriterMode(bb: BbPluginApi, projectId: string, known?: { providerId: string }): Promise<{ permissionMode?: "accept-edits" | "auto"; executionInputSources?: { permissionMode: "explicit" } }> {
+export async function guideWriterMode(bb: BbPluginApi, projectId: string, known?: { providerId: string }, hostId?: string): Promise<{ permissionMode?: "accept-edits" | "auto"; executionInputSources?: { permissionMode: "explicit" } }> {
   try {
-    const [defaults, providers] = await Promise.all([known ?? bb.sdk.projects.defaultExecutionOptions({ projectId }), bb.sdk.providers.list()]);
+    const [defaults, providers] = await Promise.all([known ?? bb.sdk.projects.defaultExecutionOptions({ projectId }), bb.sdk.providers.list(hostId ? { hostId } : undefined)]);
     const modes = providers.find((provider) => provider.id === defaults?.providerId)?.capabilities.permissionModes ?? [];
     const mode = (["accept-edits", "auto"] as const).find((candidate) => modes.includes(candidate));
     return mode ? { permissionMode: mode, executionInputSources: { permissionMode: "explicit" } } : {};
   } catch {
     return {};
   }
+}
+
+/**
+ * How a guide build starts. notify: false leaves the Needs You alert to the turn that started it. unattended: started with
+ * no click from you, so it doesn't approve agents on the PR's head. agent: the guide writer picked for this build alone,
+ * in place of Settings'.
+ */
+export interface GuideOptions { notify?: boolean; unattended?: boolean; agent?: AgentChoice }
+
+/**
+ * The guide writer a build spawns on: the one picked for it, else Settings', else the project's defaults. A pick on
+ * Settings' provider keeps Settings' permission mode; on another, it runs at the lowest one its provider runs in on the
+ * picked machine, as the project's defaults do (guideWriterMode).
+ */
+async function guideWriter(bb: BbPluginApi, preferences: ReviewPreferences, projectId: string, picked: AgentChoice | undefined) {
+  const placement = await agentPlacement(bb, picked ?? preferences.guideAgent, projectId);
+  if (!picked) return { placement, execution: preferences.guideAgent ? spawnExecution(preferences.guideAgent) : await guideWriterMode(bb, projectId) };
+  // Unset when the picked machine's provider runs in neither restricted mode or can't be read: the provider's own default.
+  const permissionMode = preferences.guideAgent?.providerId === picked.providerId ? preferences.guideAgent.permissionMode
+    : (await guideWriterMode(bb, projectId, { providerId: picked.providerId }, picked.hostId)).permissionMode;
+  return { placement, execution: spawnExecution({ ...picked, ...(permissionMode ? { permissionMode } : {}) }) };
 }
 
 export function buildGenerationPrompt(targetKey: string, generationId?: string, preferences: ReviewPreferences = defaultPreferences, earlier?: { guide: Guide | null; reviewed: boolean }): string {
@@ -139,8 +225,7 @@ export async function generateGuide(
   store: AsyncStore,
   targetKey: string,
   projectId: string,
-  /** unattended: started with no click from you, so it doesn't approve agents on the PR's head. */
-  options: { notify?: boolean; unattended?: boolean } = {},
+  options: GuideOptions = {},
 ): Promise<void> {
   // A reload disposed the store before the start's turn came; the next factory finds nothing begun.
   const run = await store.exclusive((tx) => beginGuide(bb, tx, store, targetKey, projectId, options)).catch(() => null);
@@ -159,8 +244,7 @@ export async function beginGuide(
   store: AsyncStore,
   targetKey: string,
   projectId: string,
-  /** unattended: started with no click from you, so it doesn't approve agents on the PR's head. */
-  options: { notify?: boolean; unattended?: boolean } = {},
+  options: GuideOptions = {},
 ): Promise<() => Promise<void>> {
   await stopFocusRunIn(bb, tx, targetKey, "stopped", true);
   let generationId: string | undefined;
@@ -210,12 +294,13 @@ export async function beginGuide(
   }
 
   return async () => {
+    /** Ends the run when its writer's thread fails or asks what no one sees (guideWorkerFailed, guideWorkerAsked). */
+    const failed = new AbortController();
     try {
       if ("error" in begun) throw begun.error;
       const { preferences, earlier } = begun;
       const title = `${GUIDE_WORKER_TITLE}${targetKey}`;
-      const placement = await agentPlacement(bb, preferences.guideAgent, projectId);
-      const execution = preferences.guideAgent ? spawnExecution(preferences.guideAgent) : await guideWriterMode(bb, projectId);
+      const { placement, execution } = await guideWriter(bb, preferences, projectId, options.agent);
       const id = generationId!;
       const worker = await spawningFor(bb, title, targetKey, async () => {
         const worker = await bb.sdk.threads.spawn({
@@ -225,6 +310,10 @@ export async function beginGuide(
           visibility: "hidden",
           ...execution,
         });
+        // Watched, and archived and stopped at the end, from the moment its id is known: what it asks while it's recorded
+        // is handled too.
+        workerId = worker.id;
+        watchAsks(bb, worker.id, failed);
         // Recorded, and checked that the generation still holds it, in one turn.
         const holder = await store.exclusive(async (tx) => {
           await tx.setGenerationWorker(targetKey, id, worker.id);
@@ -234,14 +323,11 @@ export async function beginGuide(
         if (holder !== targetKey) void recordFormerWorker(bb, worker.id, targetKey, "writer");
         return worker;
       });
-      workerId = worker.id;
-      const failed = new AbortController();
-      const watched = failures.get(bb) ?? new Map<string, AbortController>();
-      failures.set(bb, watched);
-      watched.set(worker.id, failed);
       /** The writer's thread failed, and why, if BB said: what the reviewer reads, not the wait's abort. */
       const writerFailed = () => new Error(`the guide writer failed${typeof failed.signal.reason === "string" ? `: ${failed.signal.reason}` : ""}`);
       try {
+        // It asked what no one sees, or failed, before its wait began.
+        if (failed.signal.aborted) throw writerFailed();
         const deadline = Date.now() + waitCap((await store.patch(targetKey)).length);
         const signal = AbortSignal.any([controller.signal, failed.signal, accepted.signal]);
         let nudged = false;
@@ -270,17 +356,21 @@ export async function beginGuide(
         if (failed.signal.aborted && !accepted.signal.aborted) throw writerFailed();
         if (!accepted.signal.aborted && await store.getGuide(targetKey) === null) throw new Error("the guide writer stopped without an accepted guide");
       } finally {
-        watched.delete(worker.id);
+        failures.get(bb)?.delete(worker.id);
       }
     } catch (error) {
       // spawn/wait failed — fall through and finalize as error below. The log
       // carries the reason, such as a custom agent bb can no longer start, and the guide's last rejection.
       if (!controller.signal.aborted) {
         const reason = (error instanceof Error ? error.message : String(error)).replace(/\.$/, "");
-        failure = generation.rejection ? `Its last guide wasn't accepted:\n${generation.rejection}` : `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`;
+        const said = `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`;
+        const rejected = generation.rejection ? `Its last guide wasn't accepted:\n${generation.rejection}` : null;
+        // A writer that failed, or asked what no one sees, says so first; a run that ended otherwise, its last rejection.
+        failure = failed.signal.aborted ? [said, ...(rejected ? [rejected] : [])].join("\n") : rejected ?? said;
         bb.log.warn(`Guide generation for ${targetKey} failed: ${String(error)}${generation.rejection ? `. Its last guide wasn't accepted:\n${generation.rejection}` : ""}`);
       }
     } finally {
+      if (workerId) failures.get(bb)?.delete(workerId);
       if (workerId && threads) {
         try { await threads.archive({ threadId: workerId }); } catch { /* best effort */ }
         try { await threads.stop({ threadId: workerId }); } catch { /* best effort */ }
